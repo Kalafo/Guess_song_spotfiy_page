@@ -87,11 +87,10 @@ def _make_sp_oauth():
 
 def _get_spotify_client():
     """Return an authenticated Spotipy client or None if not logged in."""
-    sp_oauth = _make_sp_oauth()
-    token_info = sp_oauth.get_cached_token()
-    if not token_info:
+    access_token = session.get("access_token")
+    if not access_token:
         return None
-    return spotipy.Spotify(auth=token_info["access_token"])
+    return spotipy.Spotify(auth=access_token)
 
 
 def login_required(f):
@@ -287,7 +286,10 @@ def profile():
 @login_required
 def random_song():
     """
-    Return a random liked song with Spotify URI for playback.
+    Return a random song with Spotify URI for playback.
+    Can fetch from liked songs (default) or a specific playlist.
+    Query params:
+      playlist_id = Spotify playlist ID (optional; if not provided, uses liked songs)
     Stores the current song in the session so /api/check-guess can validate.
     Requires Spotify Premium for full playback.
     """
@@ -301,7 +303,7 @@ def random_song():
         return jsonify({"error": "Spotify API error. Please try again."}), 502
 
     if not tracks:
-        return jsonify({"error": "No liked songs found"}), 404
+        return jsonify({"error": "No songs found"}), 404
 
     track = random.choice(tracks)
 
@@ -318,17 +320,12 @@ def random_song():
     session["attempts"] = 0
     session.modified = True
 
-    # Get fresh access token
-    sp_oauth = _make_sp_oauth()
-    token_info = sp_oauth.get_cached_token()
-    access_token = token_info["access_token"] if token_info else session.get("access_token")
-
     # Return only safe info to the client (no track name/artists yet)
     return jsonify(
         {
             "track_uri": f"spotify:track:{track['id']}",
             "track_id": track["id"],
-            "access_token": access_token,  # For Web Playback SDK
+            "access_token": session.get("access_token"),  # For Web Playback SDK
         }
     )
 
@@ -365,23 +362,21 @@ def check_guess():
     try:
         sp = _get_spotify_client()
         liked_songs = _fetch_liked_songs(sp) if sp else []
-    except:
+    except spotipy.SpotifyException:
         liked_songs = []
 
-    # Find closest matching songs (excluding current track)
+    # Find closest matching songs for suggestions
     matches = []
-    for track in liked_songs:
-        if track["id"] == current_track["id"]:
-            continue
-        match_score = fuzz.token_sort_ratio(guess.lower(), track["name"].lower())
-        if match_score >= 50:  # Only include reasonable matches
-            matches.append({
-                "name": track["name"],
-                "artists": track["artists"],
-                "score": match_score,
-            })
-
-    # Sort by score and take top 5
+    if liked_songs:
+        for song in liked_songs:
+            song_str = f"{song['name']} {' '.join(song['artists'])}".lower()
+            match_score = fuzz.token_sort_ratio(guess.lower(), song_str)
+            if match_score > 50:
+                matches.append({
+                    "name": song["name"],
+                    "artists": song["artists"],
+                    "score": match_score,
+                })
     matches = sorted(matches, key=lambda x: x["score"], reverse=True)[:5]
 
     response = {
@@ -602,11 +597,6 @@ def liked_songs_api():
     ]
 
     return jsonify({"songs": songs})
-
-
-# ---------------------------------------------------------------------------
-# Error handlers
-# ---------------------------------------------------------------------------
 
 
 @app.errorhandler(404)

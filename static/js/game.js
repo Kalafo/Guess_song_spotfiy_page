@@ -3,14 +3,13 @@
  *
  * Uses Spotify Web Playback SDK for full song playback (requires Premium).
  * Snippet durations per attempt:
- *   1st: 5s   2nd: 10s   3rd: 20s   4th: 40s   5th: full
  */
 
 (function () {
   'use strict';
 
   // ── State ───────────────────────────────────────────────────────────────────
-  const SNIPPET_DURATIONS = [0.02, 0.1, 0.5, 1, 3];   // seconds per attempt
+  const SNIPPET_DURATIONS = [0.02, 0.05, 0.1, 0.5, 2];   // seconds per attempt
   const MAX_ATTEMPTS = 5;
 
   let state = {
@@ -82,21 +81,22 @@
   // ── Initialize Spotify Player ────────────────────────────────────────────────
   function initSpotifyPlayer() {
     return new Promise((resolve, reject) => {
-      window.onSpotifyWebPlaybackSDKReady = () => {
-        const token = state.accessToken;
-        if (!token) {
-          reject(new Error('No access token available'));
-          return;
-        }
+      if (!state.accessToken) {
+        reject(new Error('No access token available'));
+        return;
+      }
 
+      // Define the callback for when SDK is ready
+      window.onSpotifyWebPlaybackSDKReady = () => {
         const player = new Spotify.Player({
           name: 'SpotiGuess',
-          getOAuthToken: cb => { cb(token); },
+          getOAuthToken: cb => { cb(state.accessToken); },
           volume: 0.5,
         });
 
         player.addListener('player_state_changed', playerStateChanged);
         player.addListener('ready', ({ device_id }) => {
+          console.log('Player ready with device:', device_id);
           state.deviceId = device_id;
           resolve(player);
         });
@@ -104,22 +104,36 @@
           console.error('Device ID has gone offline:', device_id);
         });
         player.addListener('authentication_error', () => {
-          reject(new Error('Authentication error'));
+          reject(new Error('Spotify authentication error'));
         });
         player.addListener('account_error', () => {
-          reject(new Error('Account error - Premium required'));
+          reject(new Error('Spotify account error - Premium required'));
+        });
+        player.addListener('playback_error', msg => {
+          console.error('Spotify playback error:', msg);
         });
 
         player.connect().then(success => {
           if (!success) {
-            reject(new Error('Failed to connect player'));
+            reject(new Error('Failed to connect Spotify player'));
           }
+        }).catch(err => {
+          reject(err);
         });
       };
 
-      // If SDK already loaded, trigger callback
+      // Check if SDK is already loaded
       if (window.Spotify && window.Spotify.Player) {
         window.onSpotifyWebPlaybackSDKReady();
+      } else {
+        // SDK not loaded yet - wait a bit and retry
+        setTimeout(() => {
+          if (window.Spotify && window.Spotify.Player) {
+            window.onSpotifyWebPlaybackSDKReady();
+          } else {
+            reject(new Error('Spotify SDK failed to load. Please refresh the page.'));
+          }
+        }, 1000);
       }
     });
   }
@@ -154,9 +168,17 @@
   async function loadNewSong() {
     showOnly(loadingState);
     
-    // Pause any current playback
+    // Stop any current playback and clear timeout
     if (state.player) {
-      state.player.pause();
+      try {
+        state.player.pause();
+      } catch (e) {
+        console.error('Error pausing player:', e);
+      }
+    }
+    if (state.playTimeout) {
+      clearTimeout(state.playTimeout);
+      state.playTimeout = null;
     }
 
     try {
@@ -182,7 +204,15 @@
 
       // Fetch liked songs for autocomplete suggestions
       if (state.likedSongs.length === 0) {
-        await fetchLikedSongsForAutocomplete();
+        try {
+          const likResp = await fetch('/api/liked-songs');
+          if (likResp.ok) {
+            const likData = await likResp.json();
+            state.likedSongs = likData.songs || [];
+          }
+        } catch (e) {
+          console.error('Failed to fetch liked songs:', e);
+        }
       }
 
       prevGuesses.innerHTML = '';
@@ -205,62 +235,20 @@
     }
   }
 
-  // ── Autocomplete suggestions ──────────────────────────────────────────────────
-  function updateSuggestions(query) {
-    if (!query.trim()) {
-      suggestionsDrop.classList.add('hidden');
-      return;
-    }
-
-    const lowerQuery = query.toLowerCase();
-    const matches = state.likedSongs.filter(song => 
-      song.name.toLowerCase().includes(lowerQuery) ||
-      song.artists.some(a => a.toLowerCase().includes(lowerQuery))
-    ).slice(0, 5);
-
-    if (matches.length === 0) {
-      suggestionsDrop.classList.add('hidden');
-      return;
-    }
-
-    suggestionsDrop.innerHTML = matches.map((song, idx) => `
-      <div class="px-4 py-3 border-b border-gray-700 cursor-pointer hover:bg-spotify-card transition-colors last:border-b-0"
-           data-idx="${idx}">
-        <div class="text-sm font-medium text-white truncate">${escapeHtml(song.name)}</div>
-        <div class="text-xs text-spotify-light truncate">${escapeHtml(song.artists.join(', '))}</div>
-      </div>
-    `).join('');
-
-    suggestionsDrop.classList.remove('hidden');
-
-    // Add click handlers
-    suggestionsDrop.querySelectorAll('div[data-idx]').forEach(el => {
-      el.addEventListener('click', () => {
-        const idx = parseInt(el.dataset.idx);
-        guessInput.value = matches[idx].name;
-        suggestionsDrop.classList.add('hidden');
-        guessInput.focus();
-      });
-    });
-  }
-
-  // ── Fetch liked songs for autocomplete ─────────────────────────────────────────
-  async function fetchLikedSongsForAutocomplete() {
-    try {
-      const resp = await fetch('/api/liked-songs');
-      if (resp.ok) {
-        const data = await resp.json();
-        state.likedSongs = data.songs || [];
-      }
-    } catch (err) {
-      console.error('Failed to fetch liked songs:', err);
-    }
-  }
+  // ── Playback ──────────────────────────────────────────────────────────────────
 
   async function playSnippet() {
     if (state.playing) {
       // Pause playback
-      state.player.pause();
+      if (state.playTimeout) {
+        clearTimeout(state.playTimeout);
+        state.playTimeout = null;
+      }
+      try {
+        state.player.pause();
+      } catch (e) {
+        console.error('Error pausing player:', e);
+      }
       state.playing = false;
       playBtn.classList.remove('playing-btn');
       playIcon.textContent = '▶';
@@ -279,18 +267,26 @@
       playIcon.textContent = '⏳';
       playText.textContent = 'Initializing…';
       
-      // Wait up to 3 seconds for player to be ready
-      let attempts = 0;
-      while ((!state.player || !state.deviceId) && attempts < 6) {
-        await new Promise(r => setTimeout(r, 500));
-        attempts++;
-      }
+      try {
+        // Wait up to 5 seconds for player to be ready
+        let attempts = 0;
+        while ((!state.player || !state.deviceId) && attempts < 10) {
+          await new Promise(r => setTimeout(r, 500));
+          attempts++;
+        }
 
-      if (!state.player || !state.deviceId) {
+        if (!state.player || !state.deviceId) {
+          playBtn.disabled = false;
+          playIcon.textContent = '▶';
+          playText.textContent = 'Play Snippet';
+          alert('⚠️ Spotify player failed to initialize.\n\nMake sure:\n• Spotify app is running on this device\n• You have Spotify Premium\n• Device name matches browser name in Spotify');
+          return;
+        }
+      } catch (err) {
         playBtn.disabled = false;
         playIcon.textContent = '▶';
         playText.textContent = 'Play Snippet';
-        alert('Spotify player not ready. Please ensure Spotify app is open and active.');
+        alert('Error initializing player: ' + err.message);
         return;
       }
     }
@@ -301,19 +297,32 @@
     playText.textContent = 'Loading…';
 
     try {
-      // Play the track
+      // Clear any existing timeout first
+      if (state.playTimeout) {
+        clearTimeout(state.playTimeout);
+        state.playTimeout = null;
+      }
+
+      // Play the track via Web API
       const playResp = await fetch(`https://api.spotify.com/v1/me/player/play?device_id=${state.deviceId}`, {
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${state.accessToken}`,
         },
-        body: JSON.stringify({ uris: [state.trackUri], position_ms: 0 }),
+        body: JSON.stringify({ 
+          uris: [state.trackUri], 
+          position_ms: 0 
+        }),
       });
 
       if (!playResp.ok) {
         const errData = await playResp.json().catch(() => ({}));
-        throw new Error(errData.error?.message || `Failed to start playback (${playResp.status})`);
+        const statusError = playResp.status === 401 ? 'Token expired' 
+                          : playResp.status === 404 ? 'Device not found'
+                          : playResp.status === 403 ? 'Not authorized'
+                          : `HTTP ${playResp.status}`;
+        throw new Error(errData.error?.message || statusError);
       }
 
       // Give player time to start
@@ -330,16 +339,19 @@
       // Stop playback after exact duration
       const stopTimeout = setTimeout(async () => {
         if (state.playing) {
-          await state.player.pause();
+          try {
+            await state.player.pause();
+          } catch (e) {
+            console.error('Error stopping playback:', e);
+          }
           state.playing = false;
+          state.playTimeout = null;
           playBtn.classList.remove('playing-btn');
           playIcon.textContent = '▶';
           playText.textContent = 'Play Snippet';
         }
       }, Math.round(dur * 1000));
 
-      // Clear previous timeout if any
-      if (state.playTimeout) clearTimeout(state.playTimeout);
       state.playTimeout = stopTimeout;
 
     } catch (err) {
@@ -347,7 +359,7 @@
       playBtn.disabled = false;
       playIcon.textContent = '▶';
       playText.textContent = 'Play Snippet';
-      alert('Playback failed. Make sure Spotify is active on this device.');
+      alert('❌ Playback failed: ' + err.message + '\n\nMake sure Spotify is running and this browser tab is selected as the active device.');
     }
   }
 
@@ -448,6 +460,45 @@
       suggestionsDrop.classList.add('hidden');
       alert('Error checking guess: ' + err.message);
     }
+  }
+
+  // ── Update suggestions dropdown ────────────────────────────────────────────────
+  function updateSuggestions(searchText) {
+    if (!searchText || !state.likedSongs || state.likedSongs.length === 0) {
+      suggestionsDrop.classList.add('hidden');
+      return;
+    }
+
+    const query = searchText.toLowerCase();
+    const matches = state.likedSongs.filter(song => {
+      const songStr = `${song.name} ${song.artists.join(' ')}`.toLowerCase();
+      return songStr.includes(query);
+    }).slice(0, 5);
+
+    if (matches.length === 0) {
+      suggestionsDrop.classList.add('hidden');
+      return;
+    }
+
+    suggestionsDrop.innerHTML = matches.map(song => `
+      <button class="w-full px-4 py-3 text-left hover:bg-spotify-card transition-colors text-sm border-b border-gray-700 last:border-b-0 cursor-pointer"
+              data-song-name="${escapeHtml(song.name)}">
+        <p class="text-white font-medium truncate">${escapeHtml(song.name)}</p>
+        <p class="text-xs text-spotify-light truncate">${escapeHtml(song.artists.join(', '))}</p>
+      </button>
+    `).join('');
+
+    suggestionsDrop.classList.remove('hidden');
+
+    // Add click handlers to suggestions
+    suggestionsDrop.querySelectorAll('button').forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        e.preventDefault();
+        guessInput.value = btn.dataset.songName;
+        suggestionsDrop.classList.add('hidden');
+        submitGuess();
+      });
+    });
   }
 
   // ── Skip/give up ──────────────────────────────────────────────────────────────
@@ -589,6 +640,7 @@
         streakDisplay.textContent = state.streak;
       }
     } catch (_) { /* non-critical */ }
+
   })();
 
 })();
