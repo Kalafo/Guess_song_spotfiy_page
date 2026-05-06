@@ -9,7 +9,7 @@
   'use strict';
 
   // ── State ───────────────────────────────────────────────────────────────────
-  const SNIPPET_DURATIONS = [0.02, 0.05, 0.1, 0.5, 2];   // seconds per attempt
+  const SNIPPET_DURATIONS = [0.02, 0.1, 0.5, 1, 4];   // seconds per attempt
   const MAX_ATTEMPTS = 5;
 
   let state = {

@@ -11,7 +11,6 @@ Routes:
   GET  /profile           - User profile/stats page
 
 API endpoints (JSON):
-  GET  /api/random-song   - Fetch a random liked song with a valid preview URL
   POST /api/check-guess   - Validate the user's guess with fuzzy matching
   GET  /api/leaderboard   - Return top scores (query ?type=daily|global)
   GET  /api/user-stats    - Return the current user's aggregate stats
