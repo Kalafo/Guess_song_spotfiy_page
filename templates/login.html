@@ -17,6 +17,9 @@
     <p class="text-spotify-light text-lg max-w-md mx-auto">
       Can you guess your own liked songs from a tiny audio snippet?
     </p>
+    <p class="text-xs text-spotify-light mt-2 max-w-md mx-auto">
+      Requires a <strong class="text-spotify-green">Spotify Premium</strong> account
+    </p>
   </div>
 
   <!-- Feature cards -->
@@ -40,9 +43,15 @@
 
   <!-- Error message if OAuth failed -->
   {% if request.args.get('error') %}
-  <div class="bg-red-900/50 border border-red-700 rounded-xl p-4 mb-6 text-red-200 text-sm max-w-md text-center">
-    Authentication failed: {{ request.args.get('error') }}. Please try again.
-  </div>
+    {% if request.args.get('error') == 'not_premium' %}
+    <div class="bg-red-900/50 border border-red-700 rounded-xl p-4 mb-6 text-red-200 text-sm max-w-md text-center">
+      This app requires a <strong class="text-red-100">Spotify Premium</strong> account for full song playback. Please upgrade to Premium and try again.
+    </div>
+    {% else %}
+    <div class="bg-red-900/50 border border-red-700 rounded-xl p-4 mb-6 text-red-200 text-sm max-w-md text-center">
+      Authentication failed: {{ request.args.get('error') }}. Please try again.
+    </div>
+    {% endif %}
   {% endif %}
 
   <!-- Login button -->

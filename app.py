@@ -56,7 +56,8 @@ app.config["SECRET_KEY"] = os.environ.get("SECRET_KEY", "dev-secret-key-change-i
 # Server-side session (filesystem)
 app.config["SESSION_TYPE"] = "filesystem"
 app.config["SESSION_FILE_DIR"] = os.path.join(os.path.dirname(__file__), "flask_session")
-app.config["SESSION_PERMANENT"] = False
+app.config["SESSION_PERMANENT"] = True
+app.config["PERMANENT_SESSION_LIFETIME"] = timedelta(days=7)
 app.config["SESSION_USE_SIGNER"] = True
 os.makedirs(app.config["SESSION_FILE_DIR"], exist_ok=True)
 
@@ -69,7 +70,7 @@ init_db(app)
 # Spotify OAuth helpers
 # ---------------------------------------------------------------------------
 
-SPOTIFY_SCOPES = "user-library-read user-read-private user-read-email"
+SPOTIFY_SCOPES = "user-library-read user-read-private user-read-email streaming"
 
 
 def _make_sp_oauth():
@@ -105,6 +106,16 @@ def login_required(f):
     return decorated
 
 
+def _check_premium(sp):
+    """Check if the current user has Spotify Premium. Returns True if Premium, False otherwise."""
+    try:
+        user = sp.current_user()
+        product = user.get("product", "").lower()
+        return product == "premium"
+    except Exception:
+        return False
+
+
 # ---------------------------------------------------------------------------
 # Helper: fetch all liked songs and cache in session
 # ---------------------------------------------------------------------------
@@ -113,7 +124,6 @@ def _fetch_liked_songs(sp):
     """
     Fetch user's saved tracks from Spotify.
     Returns a list of track dicts with at least: id, name, artists, preview_url, album.
-    Only tracks that have a non-empty preview_url are included.
     Results are cached in the session for the duration of the login.
     """
     if "liked_songs" in session and session["liked_songs"]:
@@ -130,13 +140,13 @@ def _fetch_liked_songs(sp):
             break
         for item in items:
             track = item.get("track")
-            if track and track.get("preview_url"):
+            if track:
                 tracks.append(
                     {
                         "id": track["id"],
                         "name": track["name"],
                         "artists": [a["name"] for a in track.get("artists", [])],
-                        "preview_url": track["preview_url"],
+                        "preview_url": track.get("preview_url"),
                         "album": track.get("album", {}).get("name", ""),
                         "album_art": (
                             track.get("album", {}).get("images", [{}])[0].get("url", "")
@@ -197,8 +207,12 @@ def callback():
     if not token_info:
         return redirect(url_for("login") + "?error=token_error")
 
-    # Fetch basic user profile
+    # Check if user has Spotify Premium
     sp = spotipy.Spotify(auth=token_info["access_token"])
+    if not _check_premium(sp):
+        return redirect(url_for("login") + "?error=not_premium")
+
+    # Fetch basic user profile
     spotify_user = sp.current_user()
 
     spotify_id = spotify_user["id"]
@@ -225,11 +239,12 @@ def callback():
 
     db.session.commit()
 
-    # Store user info in session
+    # Store user info in session (including access token for Web Playback SDK)
     session["user_id"] = user.id
     session["spotify_id"] = spotify_id
     session["username"] = username
     session["avatar_url"] = avatar_url
+    session["access_token"] = token_info["access_token"]
 
     return redirect(url_for("game"))
 
@@ -272,8 +287,9 @@ def profile():
 @login_required
 def random_song():
     """
-    Return a random liked song that has a Spotify preview URL.
+    Return a random liked song with Spotify URI for playback.
     Stores the current song in the session so /api/check-guess can validate.
+    Requires Spotify Premium for full playback.
     """
     sp = _get_spotify_client()
     if not sp:
@@ -285,7 +301,7 @@ def random_song():
         return jsonify({"error": "Spotify API error. Please try again."}), 502
 
     if not tracks:
-        return jsonify({"error": "No liked songs with preview URLs found"}), 404
+        return jsonify({"error": "No liked songs found"}), 404
 
     track = random.choice(tracks)
 
@@ -296,16 +312,23 @@ def random_song():
         "artists": track["artists"],
         "album": track["album"],
         "album_art": track["album_art"],
-        "preview_url": track["preview_url"],
+        "uri": f"spotify:track:{track['id']}",  # For Web Playback SDK
     }
     session["game_start_time"] = time.time()
     session["attempts"] = 0
+    session.modified = True
+
+    # Get fresh access token
+    sp_oauth = _make_sp_oauth()
+    token_info = sp_oauth.get_cached_token()
+    access_token = token_info["access_token"] if token_info else session.get("access_token")
 
     # Return only safe info to the client (no track name/artists yet)
     return jsonify(
         {
-            "preview_url": track["preview_url"],
+            "track_uri": f"spotify:track:{track['id']}",
             "track_id": track["id"],
+            "access_token": access_token,  # For Web Playback SDK
         }
     )
 
@@ -315,7 +338,7 @@ def random_song():
 def check_guess():
     """
     Accept a guess from the frontend and validate it with fuzzy matching.
-    Returns whether the guess was correct and the attempt number.
+    Returns whether the guess was correct, the attempt number, and closest matching songs.
     """
     current_track = session.get("current_track")
     if not current_track:
@@ -338,12 +361,36 @@ def check_guess():
     max_attempts = 5
     game_over = is_correct or attempts >= max_attempts
 
+    # Get liked songs for suggestions
+    try:
+        sp = _get_spotify_client()
+        liked_songs = _fetch_liked_songs(sp) if sp else []
+    except:
+        liked_songs = []
+
+    # Find closest matching songs (excluding current track)
+    matches = []
+    for track in liked_songs:
+        if track["id"] == current_track["id"]:
+            continue
+        match_score = fuzz.token_sort_ratio(guess.lower(), track["name"].lower())
+        if match_score >= 50:  # Only include reasonable matches
+            matches.append({
+                "name": track["name"],
+                "artists": track["artists"],
+                "score": match_score,
+            })
+
+    # Sort by score and take top 5
+    matches = sorted(matches, key=lambda x: x["score"], reverse=True)[:5]
+
     response = {
         "correct": is_correct,
         "attempt": attempts,
         "max_attempts": max_attempts,
         "game_over": game_over,
         "similarity": score,
+        "suggestions": matches,  # Closest matching songs
     }
 
     if game_over:
@@ -353,7 +400,6 @@ def check_guess():
             "artists": current_track["artists"],
             "album": current_track["album"],
             "album_art": current_track["album_art"],
-            "preview_url": current_track["preview_url"],
         }
 
         if is_correct:
@@ -531,6 +577,31 @@ def user_stats():
             "recent_games": [s.to_dict() for s in recent_scores],
         }
     )
+
+
+@app.route("/api/liked-songs")
+@login_required
+def liked_songs_api():
+    """Return user's liked songs for autocomplete suggestions."""
+    sp = _get_spotify_client()
+    if not sp:
+        return jsonify({"error": "Not authenticated with Spotify"}), 401
+
+    try:
+        tracks = _fetch_liked_songs(sp)
+    except spotipy.SpotifyException:
+        return jsonify({"error": "Spotify API error"}), 502
+
+    songs = [
+        {
+            "id": t["id"],
+            "name": t["name"],
+            "artists": t["artists"],
+        }
+        for t in tracks
+    ]
+
+    return jsonify({"songs": songs})
 
 
 # ---------------------------------------------------------------------------

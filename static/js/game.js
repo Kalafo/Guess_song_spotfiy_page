@@ -1,28 +1,33 @@
 /**
  * game.js  –  Main game logic for SpotiGuess
  *
+ * Uses Spotify Web Playback SDK for full song playback (requires Premium).
  * Snippet durations per attempt:
- *   1st: 0.1s   2nd: 0.5s   3rd: 1s   4th: 3s   5th: 10s
+ *   1st: 5s   2nd: 10s   3rd: 20s   4th: 40s   5th: full
  */
 
 (function () {
   'use strict';
 
   // ── State ───────────────────────────────────────────────────────────────────
-  const SNIPPET_DURATIONS = [0.1, 0.5, 1, 3, 10];   // seconds per attempt
+  const SNIPPET_DURATIONS = [0.1, 0.3, 0.5, 1, 3];   // seconds per attempt
   const MAX_ATTEMPTS = 5;
 
   let state = {
-    previewUrl: null,
+    trackUri: null,
     trackId: null,
     attempt: 0,           // 0-indexed (0 = first attempt not yet made)
     guesses: [],
     gameOver: false,
-    audioCtx: null,
+    player: null,          // Spotify Player instance
+    deviceId: null,        // Spotify device ID
+    accessToken: null,     // Access token for API calls
     currentSource: null,
     score: 0,
     streak: 0,
     playing: false,
+    playTimeout: null,     // Timeout for stopping playback
+    likedSongs: [],        // Cache of user's liked songs for suggestions
   };
 
   // ── DOM refs ─────────────────────────────────────────────────────────────────
@@ -46,6 +51,7 @@
 
   const guessInput     = $('guess-input');
   const prevGuesses    = $('previous-guesses');
+  const suggestionsDrop = $('suggestions-dropdown');
   const attemptBadge   = $('attempt-badge');
   const snippetDuration = $('snippet-duration');
   const durationBar    = $('duration-bar');
@@ -73,6 +79,55 @@
     if (el) el.classList.remove('hidden');
   }
 
+  // ── Initialize Spotify Player ────────────────────────────────────────────────
+  function initSpotifyPlayer() {
+    return new Promise((resolve, reject) => {
+      window.onSpotifyWebPlaybackSDKReady = () => {
+        const token = state.accessToken;
+        if (!token) {
+          reject(new Error('No access token available'));
+          return;
+        }
+
+        const player = new Spotify.Player({
+          name: 'SpotiGuess',
+          getOAuthToken: cb => { cb(token); },
+          volume: 0.5,
+        });
+
+        player.addListener('player_state_changed', playerStateChanged);
+        player.addListener('ready', ({ device_id }) => {
+          state.deviceId = device_id;
+          resolve(player);
+        });
+        player.addListener('not_ready', ({ device_id }) => {
+          console.error('Device ID has gone offline:', device_id);
+        });
+        player.addListener('authentication_error', () => {
+          reject(new Error('Authentication error'));
+        });
+        player.addListener('account_error', () => {
+          reject(new Error('Account error - Premium required'));
+        });
+
+        player.connect().then(success => {
+          if (!success) {
+            reject(new Error('Failed to connect player'));
+          }
+        });
+      };
+
+      // If SDK already loaded, trigger callback
+      if (window.Spotify && window.Spotify.Player) {
+        window.onSpotifyWebPlaybackSDKReady();
+      }
+    });
+  }
+
+  function playerStateChanged(state_obj) {
+    // Handle player state changes if needed
+  }
+
   // ── Update attempt UI ────────────────────────────────────────────────────────
   function refreshAttemptUI() {
     const idx = Math.min(state.attempt, MAX_ATTEMPTS - 1);
@@ -98,7 +153,11 @@
   // ── Fetch a new random song ───────────────────────────────────────────────────
   async function loadNewSong() {
     showOnly(loadingState);
-    stopAudio();
+    
+    // Pause any current playback
+    if (state.player) {
+      state.player.pause();
+    }
 
     try {
       const resp = await fetch('/api/random-song');
@@ -108,15 +167,29 @@
       }
       const data = await resp.json();
 
-      state.previewUrl = data.preview_url;
+      state.trackUri = data.track_uri;
       state.trackId = data.track_id;
+      state.accessToken = data.access_token;
       state.attempt = 0;
       state.guesses = [];
       state.gameOver = false;
       state.playing = false;
 
+      // Initialize player if not already done
+      if (!state.player) {
+        state.player = await initSpotifyPlayer();
+      }
+
+      // Fetch liked songs for autocomplete suggestions
+      if (state.likedSongs.length === 0) {
+        await fetchLikedSongsForAutocomplete();
+      }
+
       prevGuesses.innerHTML = '';
       guessInput.value = '';
+      guessInput.disabled = false;
+      submitBtn.disabled = false;
+      suggestionsDrop.classList.add('hidden');
 
       refreshAttemptUI();
       showOnly(gameArea);
@@ -127,61 +200,103 @@
 
     } catch (err) {
       errorTitle.textContent = 'Could not load song';
-      errorMessage.textContent = err.message || 'Please check your internet connection.';
+      errorMessage.textContent = err.message || 'Please check your internet connection or make sure you have Spotify Premium.';
       showOnly(errorState);
     }
   }
 
-  // ── Web Audio API playback ────────────────────────────────────────────────────
-  function getAudioCtx() {
-    if (!state.audioCtx || state.audioCtx.state === 'closed') {
-      state.audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  // ── Autocomplete suggestions ──────────────────────────────────────────────────
+  function updateSuggestions(query) {
+    if (!query.trim()) {
+      suggestionsDrop.classList.add('hidden');
+      return;
     }
-    // Resume if suspended (browser autoplay policy)
-    if (state.audioCtx.state === 'suspended') {
-      state.audioCtx.resume();
+
+    const lowerQuery = query.toLowerCase();
+    const matches = state.likedSongs.filter(song => 
+      song.name.toLowerCase().includes(lowerQuery) ||
+      song.artists.some(a => a.toLowerCase().includes(lowerQuery))
+    ).slice(0, 5);
+
+    if (matches.length === 0) {
+      suggestionsDrop.classList.add('hidden');
+      return;
     }
-    return state.audioCtx;
+
+    suggestionsDrop.innerHTML = matches.map((song, idx) => `
+      <div class="px-4 py-3 border-b border-gray-700 cursor-pointer hover:bg-spotify-card transition-colors last:border-b-0"
+           data-idx="${idx}">
+        <div class="text-sm font-medium text-white truncate">${escapeHtml(song.name)}</div>
+        <div class="text-xs text-spotify-light truncate">${escapeHtml(song.artists.join(', '))}</div>
+      </div>
+    `).join('');
+
+    suggestionsDrop.classList.remove('hidden');
+
+    // Add click handlers
+    suggestionsDrop.querySelectorAll('div[data-idx]').forEach(el => {
+      el.addEventListener('click', () => {
+        const idx = parseInt(el.dataset.idx);
+        guessInput.value = matches[idx].name;
+        suggestionsDrop.classList.add('hidden');
+        guessInput.focus();
+      });
+    });
   }
 
-  function stopAudio() {
-    if (state.currentSource) {
-      try { state.currentSource.stop(); } catch (_) { /* already stopped */ }
-      state.currentSource = null;
+  // ── Fetch liked songs for autocomplete ─────────────────────────────────────────
+  async function fetchLikedSongsForAutocomplete() {
+    try {
+      const resp = await fetch('/api/liked-songs');
+      if (resp.ok) {
+        const data = await resp.json();
+        state.likedSongs = data.songs || [];
+      }
+    } catch (err) {
+      console.error('Failed to fetch liked songs:', err);
     }
-    state.playing = false;
   }
 
   async function playSnippet() {
     if (state.playing) {
-      stopAudio();
+      // Pause playback
+      state.player.pause();
+      state.playing = false;
       playBtn.classList.remove('playing-btn');
       playIcon.textContent = '▶';
       playText.textContent = 'Play Snippet';
       return;
     }
 
-    const dur = SNIPPET_DURATIONS[Math.min(state.attempt, MAX_ATTEMPTS - 1)];
+    if (!state.trackUri) {
+      alert('No song loaded. Try again!');
+      return;
+    }
 
+    const dur = SNIPPET_DURATIONS[Math.min(state.attempt, MAX_ATTEMPTS - 1)];
     playBtn.disabled = true;
     playIcon.textContent = '⏳';
     playText.textContent = 'Loading…';
 
     try {
-      const ctx = getAudioCtx();
-      const resp = await fetch(state.previewUrl);
-      const arrayBuffer = await resp.arrayBuffer();
-      const audioBuffer = await ctx.decodeAudioData(arrayBuffer);
+      // Play the track
+      const playResp = await fetch(`https://api.spotify.com/v1/me/player/play?device_id=${state.deviceId}`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${state.accessToken}`,
+        },
+        body: JSON.stringify({ uris: [state.trackUri], position_ms: 0 }),
+      });
 
-      stopAudio();   // stop any previous
+      if (!playResp.ok) {
+        throw new Error('Failed to start playback');
+      }
 
-      const source = ctx.createBufferSource();
-      source.buffer = audioBuffer;
-      source.connect(ctx.destination);
+      // Give player time to start
+      await new Promise(r => setTimeout(r, 500));
 
-      // Play from offset 0 for `dur` seconds
-      source.start(0, 0, dur);
-      state.currentSource = source;
+      state.player.resume();
       state.playing = true;
 
       playBtn.disabled = false;
@@ -189,20 +304,27 @@
       playIcon.textContent = '⏹';
       playText.textContent = `Playing (${dur}s)…`;
 
-      source.onended = () => {
-        state.playing = false;
-        state.currentSource = null;
-        playBtn.classList.remove('playing-btn');
-        playIcon.textContent = '▶';
-        playText.textContent = 'Play Snippet';
-      };
+      // Stop playback after exact duration
+      const stopTimeout = setTimeout(async () => {
+        if (state.playing) {
+          await state.player.pause();
+          state.playing = false;
+          playBtn.classList.remove('playing-btn');
+          playIcon.textContent = '▶';
+          playText.textContent = 'Play Snippet';
+        }
+      }, Math.round(dur * 1000));
+
+      // Clear previous timeout if any
+      if (state.playTimeout) clearTimeout(state.playTimeout);
+      state.playTimeout = stopTimeout;
 
     } catch (err) {
+      console.error('Playback error:', err);
       playBtn.disabled = false;
       playIcon.textContent = '▶';
       playText.textContent = 'Play Snippet';
-      console.error('Audio playback error:', err);
-      alert('Could not play audio snippet. Your browser may block autoplay — click anywhere first.');
+      alert('Playback failed. Make sure Spotify is active on this device.');
     }
   }
 
@@ -243,16 +365,26 @@
       `;
       prevGuesses.appendChild(pill);
 
+      // Show suggestions if wrong guess
+      if (!data.correct && data.suggestions && data.suggestions.length > 0) {
+        const suggestionsDiv = document.createElement('div');
+        suggestionsDiv.className = 'mt-2 p-2 bg-blue-900/30 border border-blue-700 rounded-lg text-xs text-blue-300';
+        suggestionsDiv.innerHTML = `<div class="font-medium mb-1">Did you mean?</div>` +
+          data.suggestions.map(s => 
+            `<div class="text-blue-200 truncate">• ${escapeHtml(s.name)} - ${escapeHtml(s.artists.join(', '))}</div>`
+          ).join('');
+        prevGuesses.appendChild(suggestionsDiv);
+      }
+
       if (!data.correct) {
         // Shake the input
-        guessInput.value = '';
         guessInput.classList.add('shake');
         setTimeout(() => guessInput.classList.remove('shake'), 400);
       }
 
       if (data.game_over) {
         state.gameOver = true;
-        stopAudio();
+        if (state.player) state.player.pause();
 
         // Save score to backend
         const saveResp = await fetch('/api/save-score', {
@@ -277,16 +409,20 @@
         showResultCard(data, saveData);
 
       } else {
+        // Game continues - re-enable input for next guess
         refreshAttemptUI();
+        guessInput.value = '';
         guessInput.disabled = false;
         submitBtn.disabled = false;
-        guessInput.value = '';
+        suggestionsDrop.classList.add('hidden');
         guessInput.focus();
       }
 
     } catch (err) {
+      console.error('Error:', err);
       submitBtn.disabled = false;
       guessInput.disabled = false;
+      suggestionsDrop.classList.add('hidden');
       alert('Error checking guess: ' + err.message);
     }
   }
@@ -298,7 +434,7 @@
 
     state.gameOver = true;
     state.attempt = MAX_ATTEMPTS;
-    stopAudio();
+    if (state.player) state.player.pause();
 
     // Force check-guess with obviously wrong guess to trigger game_over server-side
     // Actually: just call save-score with won=false then fetch the track from session
@@ -401,6 +537,20 @@
   submitBtn.addEventListener('click', submitGuess);
   guessInput.addEventListener('keydown', e => {
     if (e.key === 'Enter') submitGuess();
+  });
+  guessInput.addEventListener('input', e => {
+    updateSuggestions(e.target.value);
+  });
+
+  // Hide suggestions on blur
+  guessInput.addEventListener('blur', () => {
+    setTimeout(() => suggestionsDrop.classList.add('hidden'), 200);
+  });
+
+  guessInput.addEventListener('focus', () => {
+    if (guessInput.value.trim()) {
+      updateSuggestions(guessInput.value);
+    }
   });
 
   // ── Init ──────────────────────────────────────────────────────────────────────

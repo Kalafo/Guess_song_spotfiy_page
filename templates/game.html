@@ -92,16 +92,21 @@
     <div class="bg-spotify-card rounded-2xl p-6 mb-6 shadow-xl" id="guess-section">
       <h3 class="text-sm font-medium text-spotify-light uppercase tracking-wider mb-4">Your Guess</h3>
 
-      <div class="flex gap-3">
-        <input
-          type="text"
-          id="guess-input"
-          placeholder="Type the song title…"
-          autocomplete="off"
-          class="flex-1 bg-spotify-hover border border-gray-600 rounded-xl px-4 py-3 text-white
-                 placeholder-gray-500 focus:outline-none focus:border-spotify-green focus:ring-1
-                 focus:ring-spotify-green transition-colors text-sm"
-        />
+      <div class="flex gap-3 relative">
+        <div class="flex-1 relative">
+          <input
+            type="text"
+            id="guess-input"
+            placeholder="Type the song title…"
+            autocomplete="off"
+            class="w-full bg-spotify-hover border border-gray-600 rounded-xl px-4 py-3 text-white
+                   placeholder-gray-500 focus:outline-none focus:border-spotify-green focus:ring-1
+                   focus:ring-spotify-green transition-colors text-sm"
+          />
+          <!-- Autocomplete suggestions dropdown -->
+          <div id="suggestions-dropdown" class="hidden absolute top-full left-0 right-0 mt-1 bg-spotify-hover border border-gray-600 rounded-xl shadow-lg z-10 max-h-48 overflow-y-auto">
+          </div>
+        </div>
         <button id="submit-guess-btn"
                 class="bg-spotify-green text-black font-bold px-6 py-3 rounded-xl
                        hover:bg-green-400 transition-all hover:scale-105 active:scale-95 text-sm">
@@ -181,5 +186,6 @@
 {% endblock %}
 
 {% block scripts %}
+<script src="https://sdk.scdn.co/spotify-player.js"></script>
 <script src="{{ url_for('static', filename='js/game.js') }}"></script>
 {% endblock %}
