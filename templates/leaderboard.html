@@ -1,0 +1,110 @@
+{% extends "base.html" %}
+{% block title %}SpotiGuess – Leaderboard{% endblock %}
+
+{% block content %}
+<div class="max-w-3xl mx-auto animate-fade-in">
+  <div class="text-center mb-8">
+    <h1 class="text-3xl font-bold text-white mb-2">Leaderboard 🏆</h1>
+    <p class="text-spotify-light">See how you stack up against other players</p>
+  </div>
+
+  <!-- Tab switcher -->
+  <div class="flex rounded-xl bg-spotify-card p-1 mb-6 max-w-xs mx-auto">
+    <button id="tab-global"
+            class="tab-btn flex-1 py-2 text-sm font-semibold rounded-lg transition-all
+                   bg-spotify-green text-black">
+      🌍 Global
+    </button>
+    <button id="tab-daily"
+            class="tab-btn flex-1 py-2 text-sm font-semibold rounded-lg transition-all
+                   text-spotify-light hover:text-white">
+      📅 Today
+    </button>
+  </div>
+
+  <!-- Loading -->
+  <div id="lb-loading" class="text-center py-16">
+    <div class="inline-block w-10 h-10 border-4 border-spotify-green border-t-transparent rounded-full animate-spin mb-3"></div>
+    <p class="text-spotify-light">Loading leaderboard…</p>
+  </div>
+
+  <!-- Error -->
+  <div id="lb-error" class="text-center py-16 hidden">
+    <div class="text-4xl mb-3">😕</div>
+    <p class="text-white font-bold mb-2">Failed to load leaderboard</p>
+    <button id="lb-retry" class="text-spotify-green hover:underline text-sm">Retry</button>
+  </div>
+
+  <!-- Leaderboard table -->
+  <div id="lb-content" class="hidden">
+    <!-- Top 3 podium -->
+    <div id="podium" class="flex justify-center items-end gap-3 mb-8 hidden">
+      <!-- 2nd place -->
+      <div class="podium-entry text-center" id="podium-2">
+        <div class="relative mb-2">
+          <img class="w-12 h-12 rounded-full object-cover mx-auto border-2 border-gray-500 podium-avatar" src="" alt="" />
+          <span class="absolute -bottom-1 -right-1 bg-gray-500 text-white text-xs font-bold w-5 h-5 flex items-center justify-center rounded-full">2</span>
+        </div>
+        <p class="text-xs text-white font-semibold truncate max-w-[80px] podium-name"></p>
+        <div class="bg-gray-600 rounded-t-lg mt-2 w-full h-16 flex items-end justify-center pb-2">
+          <span class="text-xs text-white font-bold podium-score"></span>
+        </div>
+      </div>
+      <!-- 1st place -->
+      <div class="podium-entry text-center" id="podium-1">
+        <div class="relative mb-2">
+          <img class="w-16 h-16 rounded-full object-cover mx-auto border-2 border-yellow-400 podium-avatar" src="" alt="" />
+          <span class="absolute -bottom-1 -right-1 bg-yellow-400 text-black text-xs font-bold w-5 h-5 flex items-center justify-center rounded-full">1</span>
+        </div>
+        <p class="text-xs text-white font-semibold truncate max-w-[80px] podium-name"></p>
+        <div class="bg-yellow-500/80 rounded-t-lg mt-2 w-full h-24 flex items-end justify-center pb-2">
+          <span class="text-xs text-white font-bold podium-score"></span>
+        </div>
+      </div>
+      <!-- 3rd place -->
+      <div class="podium-entry text-center" id="podium-3">
+        <div class="relative mb-2">
+          <img class="w-12 h-12 rounded-full object-cover mx-auto border-2 border-orange-600 podium-avatar" src="" alt="" />
+          <span class="absolute -bottom-1 -right-1 bg-orange-600 text-white text-xs font-bold w-5 h-5 flex items-center justify-center rounded-full">3</span>
+        </div>
+        <p class="text-xs text-white font-semibold truncate max-w-[80px] podium-name"></p>
+        <div class="bg-orange-700/80 rounded-t-lg mt-2 w-full h-10 flex items-end justify-center pb-2">
+          <span class="text-xs text-white font-bold podium-score"></span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Table -->
+    <div class="bg-spotify-card rounded-2xl overflow-hidden shadow-xl">
+      <table class="w-full text-sm">
+        <thead>
+          <tr class="border-b border-gray-700 text-spotify-light text-xs uppercase tracking-wider">
+            <th class="text-left px-5 py-3">Rank</th>
+            <th class="text-left px-5 py-3">Player</th>
+            <th class="text-right px-5 py-3">Score</th>
+            <th class="text-right px-5 py-3 hidden sm:table-cell" id="col-extra">Streak</th>
+            <th class="text-right px-5 py-3 hidden md:table-cell">Win %</th>
+          </tr>
+        </thead>
+        <tbody id="lb-table-body">
+          <!-- Rows injected by JS -->
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- Empty state -->
+  <div id="lb-empty" class="text-center py-16 hidden">
+    <div class="text-5xl mb-4">🏁</div>
+    <p class="text-white font-bold text-xl mb-2">No scores yet</p>
+    <p class="text-spotify-light mb-6">Be the first to play!</p>
+    <a href="{{ url_for('game') }}" class="bg-spotify-green text-black font-bold px-6 py-2.5 rounded-full hover:bg-green-400 transition-all">
+      Play Now
+    </a>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/leaderboard.js') }}"></script>
+{% endblock %}
