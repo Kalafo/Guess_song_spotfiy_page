@@ -1,6 +1,6 @@
 Flask==3.0.3
 Flask-Session==0.8.0
-spotipy==2.24.0
+spotipy==2.25.1
 SQLAlchemy==2.0.36
 psycopg2-binary==2.9.10
 python-dotenv==1.0.1
