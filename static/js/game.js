@@ -10,7 +10,7 @@
   'use strict';
 
   // ── State ───────────────────────────────────────────────────────────────────
-  const SNIPPET_DURATIONS = [0.1, 0.3, 0.5, 1, 3];   // seconds per attempt
+  const SNIPPET_DURATIONS = [0.02, 0.1, 0.5, 1, 3];   // seconds per attempt
   const MAX_ATTEMPTS = 5;
 
   let state = {
@@ -273,6 +273,28 @@
       return;
     }
 
+    // Ensure player is ready
+    if (!state.player || !state.deviceId) {
+      playBtn.disabled = true;
+      playIcon.textContent = '⏳';
+      playText.textContent = 'Initializing…';
+      
+      // Wait up to 3 seconds for player to be ready
+      let attempts = 0;
+      while ((!state.player || !state.deviceId) && attempts < 6) {
+        await new Promise(r => setTimeout(r, 500));
+        attempts++;
+      }
+
+      if (!state.player || !state.deviceId) {
+        playBtn.disabled = false;
+        playIcon.textContent = '▶';
+        playText.textContent = 'Play Snippet';
+        alert('Spotify player not ready. Please ensure Spotify app is open and active.');
+        return;
+      }
+    }
+
     const dur = SNIPPET_DURATIONS[Math.min(state.attempt, MAX_ATTEMPTS - 1)];
     playBtn.disabled = true;
     playIcon.textContent = '⏳';
@@ -290,7 +312,8 @@
       });
 
       if (!playResp.ok) {
-        throw new Error('Failed to start playback');
+        const errData = await playResp.json().catch(() => ({}));
+        throw new Error(errData.error?.message || `Failed to start playback (${playResp.status})`);
       }
 
       // Give player time to start
