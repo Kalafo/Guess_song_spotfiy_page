@@ -281,8 +281,8 @@ def random_song():
 
     try:
         tracks = _fetch_liked_songs(sp)
-    except spotipy.SpotifyException as e:
-        return jsonify({"error": f"Spotify API error: {str(e)}"}), 502
+    except spotipy.SpotifyException:
+        return jsonify({"error": "Spotify API error. Please try again."}), 502
 
     if not tracks:
         return jsonify({"error": "No liked songs with preview URLs found"}), 404
